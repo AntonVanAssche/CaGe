@@ -1,305 +1,188 @@
-#! /bin/sh
+#!/usr/bin/env bash
 
 # CaGe install script, version 1.1
 # Sebastian Lisken
 # requires standard shell with 'expr' command.
 
+set -o errexit  # Abort on nonzero exit code.
+set -o nounset  # Abort on unbound variable.
+set -o pipefail # Don't hide errors within pipes.
 
-### helper functions #################################################
-
-error_exit ()
-{
-  echo ""
-  echo "$1"
-  echo ""
-  exit 1
+# Whenever an error occurs, print the error message and exit
+# with a non-zero exit code.
+error_exit() {
+    printf '\n%s\n' "${1}"
+    exit 1
 }
 
-find_cmd ()
-{
-  found=""
-  for cmd
-  do
-     t="` type $cmd 2>&- `"
-     if found="` expr \"$t\" : \"^$cmd is \(.*\)$\" 2>&- `"
-       then break
-     fi
-  done
-  test -n "$found" && echo "$found"
+# Wrapper for 'command -v' to avoid spamming '> /dev/null'.
+# It also protects against user aliasses and functions.
+find_cmd() {
+    cmd=$(command -v "${1}") 2> /dev/null
+    [[ -x "${cmd}" ]] && printf '%s' "${cmd}"
 }
 
-find_cmds ()
-{
-  value=0
-  for cmd
-  do
-     find_cmd "$cmd" >/dev/null || { echo "$cmd"; value=1; }
-  done
-  return $value
+# Since we want to find multiple commands,
+# we can call find_cmd() in a loop. This is especially useful
+# when we want to check whether all dependencies are installed.
+find_cmds() {
+    value=0
+    for cmd in "${@}"; do
+        if ! find_cmd "${cmd}" 2> /dev/null; then
+            echo "${cmd}"
+            value=1
+        fi
+    done
+    return "${value}"
 }
 
-parent ()
-{
-  if parent="` expr \"$1\" : '^\(.*[^/]\)//*[^/][^/]*/*$' 2>&- `"
-    then echo "$parent"
-  elif expr "$1" : '^/' 2>&- >/dev/null
-    then echo "/"
-    else echo "."
-  fi
+parent() {
+    if parent="$(expr "${1}" : '^\(.*[^/]\)//*[^/][^/]*/*$' 2>&- )"; then
+        printf '%s' "${parent}"
+    elif expr "${1}" : '^/' 2>&- >/dev/null; then
+        printf '/'
+    else
+        printf '.'
+    fi
 }
 
-is_javadir ()
-{
-  javadir="` parent \"$1\" `"
-  [ -x "$javadir/bin/$java_cmd" ] && [ ! -d "$javadir/bin/$java_cmd" ] && [ -r "$javadir/include/jni.h" ]
+is_java_dir() {
+    local java_dir="$(parent "${1}")"
+    [[ -x "${java_dir}/bin/${java_cmd}" ]] && \
+        [[ ! -d "${java_dir}/bin/${java_cmd}" ]] && \
+        [[ -r "${java_dir}/include/jni.h" ]]
 }
 
-exec 0</dev/tty 1>/dev/tty 2>>/dev/tty
+printf '\033c%s' "
+C a G e  --  Chemical & abstract Graph environment
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+"
 
 
-### Welcome message ##################################################
+# We will use 'read -e' to read user input. This provides TAB completion.
+# However, not all versions of 'read' support this option. So when we
+# can't get read -e to work, we will use 'read' without completion.
+with_completion=""
+printf . | eval "read -e test" 2>/dev/null && \
+    with_completion="-e"
 
-eval clear 2>&- || echo ""
-echo ""
-echo "C a G e  --  Chemical & abstract Graph environment"
-echo "++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
-echo ""
 
-
-### find out how to invoke echo with backslash escapes ###############
-
-if [ -z "` echo '\c' `" ]
-  then esc=""
-elif [ -z "` echo -e '\c' `" ]
-  then esc="-e"
-  else error_exit "Can't get 'echo' escapes to work - aborted."
+# Since most of the code is written in C, we need a C compiler.
+# We will try to find 'gcc' or 'cc' in the path.
+# If we can't find one, we will abort the installation.
+printf '\n*  Looking for a C compiler ...\n'
+if CC="$(find_cmd gcc cc)"; then
+    printf '   Ok, using %s.\n' "${CC}"
+else
+    printf '   None found. Make sure a C compiler (cc or gcc) is in your path.\n'
+    error_exit "-  Installation aborted."
 fi
-
-### see if 'read' has an '-e' option (read with completion) ##########
-
-if echo . | eval "read -e test" 2>/dev/null
-  then with_completion="-e"
-  else with_completion=""
-fi
-
-
-### find a C compiler ################################################
-
-echo ""
-echo "*  Looking for a C compiler ..."
-if CC="` find_cmd gcc cc `"
-  then echo "   Ok, using '$CC'."
-  else echo "   None found. Make sure a C compiler ('cc' or 'gcc') is in your path."
-       error_exit "-  Installation aborted."
-fi
-echo ""
+printf '\n'
 export CC
 
-
-### find other commands that we will need ############################
-
-echo ""
-echo "*  Looking for commands: 'unzip', 'make', 'mkdir', 'chmod', 'find' ..."
-if missing=` find_cmds unzip make mkdir chmod find `
-  then echo "   All found."
-  else echo "   Command(s) not found in your path: " $missing
-       error_exit "-  Installation aborted."
+# We will need 'unzip', 'make', 'mkdir', 'chmod', 'find' and 'java',
+# in order to compile and install CaGe. If we can't find one of them,
+# we will abort the installation.
+printf '\n*  Looking for commands: unzip, make, mkdir, chmod, find ...\n'
+if missing="$(find_cmds unzip make mkdir chmod find)"; then
+    printf '   All found.\n'
+else
+    printf '   Command(s) not found in your path: %s\n' "${missing}"
+    error_exit "-  Installation aborted."
 fi
-echo ""
+printf '\n'
 
 
 ### find the "bin" directory of a Java installation ##################
 
-echo ""
-echo "*  Looking for a Java installation ..."
+printf '\n*  Looking for a Java installation ...\n'
 
 java_cmd="java"
-javadirs=0
+java_dirs=0
 nl="
 "
+
 space="	 "
-javadirlist=""
+java_dir_list=""
 
-javadirlist_get ()
-{
-  num="$1"
-  expr "$nl$javadirlist" : ".*$nl[ ]*$num:  \([^$nl]*\)"
+java_dir_list_get() {
+    local num="${1}"
+    expr "${nl}${java_dir_list}" : ".*${nl}[ ]*${num}:  \([^${nl}]*\)"
 }
 
-add_to_javadirlist ()
-{
-  dirlist="$1"
-  dirsep="$2"
-  get_parents="$3"
-  while dir="` expr \"$dirlist\" : \"^\([^$dirsep]*\)\" 2>&- `"
-  do
-     test "$get_parents" && dir="` parent \"$dir\" `"
-     test -z "$dir" && dir=.
-     if is_javadir "$dir"
-       then javadirs=` expr $javadirs + 1 `
-	   javadirlist="$javadirlist $javadirs:  $dir$nl"
-	   # javadirlist="$javadirlist` expr substr '   ' '(' length $javadirs ')' 3 `$javadirs:  $dir$nl"
-     fi
-     dirlist="` expr \"$dirlist\" : \"^[^$dirsep]*$dirsep\(.*\)$\" 2>&- `"
-  done
+add_to_java_dir_list() {
+    local dir_list="${1}"
+    local dir_sep="${2}"
+    local get_parents="${3}"
+
+    while dir="$(expr \"${dir_list}\" : \"^\([^${dir_sep}]*\)\" 2>&-)"; do
+        [[ "${get_parents}" ]] && dir="$(parent "${dir}")"
+        [[ -z "${dir}" ]] && dir=.
+        if is_java_dir "${dir}"; then
+            java_dirs="$(expr "${java_dirs}" + 1)"
+            java_dir_list="${java_dir_list}${nl}  ${java_dirs}:  ${dir}"
+        fi
+        dir_list="$(expr "${dir_list}" : "^[^${dir_sep}]*${dir_sep}\(.*\)$" 2>&-)"
+    done
 }
 
-prepare_javadirlist_prompt ()
-{
-  echo ""
-  if [ -z "$javadirlist" ]
-    then echo "   None found. Enter a directory that contains the '$java_cmd' command."
-	 prompt="directory:  "
-    else if [ $javadirs -eq 1 ]
-	   then directories_seem="directory seems"
-		choose_one="Choose it (enter 1)"
-	   else directories_seem="directories seem"
-		choose_one="Choose one (enter its number)"
-	 fi
-	 echo "   The following $directories_seem to be part of a Java installation."
-	 echo "   $choose_one or enter the path of another such directory."
-	 prompt="number or directory:  "
-  fi
-  echo "   Enter '?' for a full search, '-' to exit."
+# When we can't find the 'java' command, the user will have to
+# enter the path to a Java installation manually.
+# We will try to find the 'java' command in the path.
+# If we can't find it, we will ask the user to enter the path
+prepare_java_dir_list_prompt() {
+    printf '\n'
+    if [[ -z "${java_dir_list}" ]]; then
+        printf '   None found. Enter a directory that contains the '\''%s'\'' command.\n' \
+            "${java_cmd}"
+        prompt="directory: "
+    else
+        if [[ "${java_dirs}" -eq 1 ]]; then
+            directories_seem="directory seems"
+            choose_one="Choose it (enter 1)"
+        else
+            directories_seem="directories seem"
+            choose_one="Choose one (enter 1-${java_dirs})"
+        fi
+
+        printf '   The following %s to be part of a Java installation:\n' \
+            "${directories_seem}"
+        printf '   %s or enter the path of another such directory.\n' \
+            "${choose_one}"
+
+        prompt="directory [1-${java_dirs}]: "
+    fi
+
+    printf '    Enter '\''?'\'' for a full search, or '\''-'\'' to exit.\n'
 }
 
-#Check if command exists
-if [ -f /usr/libexec/java_home ] && `/usr/libexec/java_home &> /dev/null`
-  then
-  #this is the correct javadir, add it to the PATH variable
-  homedir_mac=`/usr/libexec/java_home`/bin/:
-else
-  #add empty dir to PATH
-  homedir_mac=''
-fi
+# We will try to find the 'java_home' command.
+# If we can't find it, we will ask the user to enter the path
+homedir_mac=""
+[[ -f /usr/libexec/java_home ]] && [[ -x /usr/libexec/java_home ]] && \
+    homedir_mac="$(/usr/libexec/java_home)/bin:"
 
-add_to_javadirlist "$PATH:$homedir_mac" ":"
+    add_to_java_dir_list "${PATH}:${homedir_mac}" ":"
 
-prepare_javadirlist_prompt
+    prepare_java_dir_list_prompt
 
-choice=""
-while [ -z "$choice" ]
-do
-   echo ""
-   test -n "$javadirlist" && echo "$nl$javadirlist"
-   echo ""
-   echo $esc "$prompt\c"
-   read $with_completion choice
-   numeric="` expr \"$choice\" : '^\([1-9][0-9]*\)$' 2>&- `"
-   if [ "$choice" = "-" ]
-     then error_exit "-  Installation cancelled."
-   elif [ "$choice" = "?" ]
-     then choice=""
-	  echo ""
-          echo "   Enter a list of directories to start searching from (space-separated)."
-	  echo "   An empty response cancels the search. You may use '/' to start a full"
-	  echo "   search. Some good start points are:"
-	  echo ""
-	  echo "        /usr/lib/jvm        (Linux)"
-	  echo "        /System /Libraries  (Mac OS X)"
-	  echo ""
-	  echo $esc "   start points:  \c"
-	  read $with_completion points
-	  points="` expr \"$points\" : \"[$space]*\(.*[^$space]\)[$space]*$\" `"
-	  test -z "$points" && continue
-	  echo ""
-	  echo ""
-	  additional=""
-	  test $javadirs -gt 0 && additional=" additional"
-	  echo "   Searching for$additional java directories ..."
-	  add_to_javadirlist "` find $points \( -type f -o -type l \) -name "$java_cmd" -perm -ugo=x -print 2>/dev/null `" "$nl" true
-	  prepare_javadirlist_prompt
-   elif [ "$numeric" ] && [ $choice -le $javadirs ]
-     then javadir="` javadirlist_get \"$choice\" `"
-	  javadir="` parent \"$javadir\" `"
-          nonumber=""
-   elif is_javadir "$choice"
-     then nonumber=true
-     else echo ""
-          echo $esc "   Sorry, your answer was incorrect. \c"
-	  if [ $javadirs -eq 0 ] || [ -z "$numeric" ]
-            then echo "The directory must contain a '$java_cmd'"
-		 echo "   command and a \"sibling\" directory called 'include' containing 'jni.h'."
-	  fi
-          echo "   Try again or enter '?' for a full search, '-' to exit."
-          choice=""
-   fi
+    while [[ -z "${REPLY}" ]]; do
+    printf '\n'
+    [[ -n "${java_dir_list}" ]] && printf '%s\n' "${java_dir_list}"
+    printf '\n%s\c' "${prompt}"
+    read -r ${with_completion?}
+
+    if [[ "${REPLY}" == "-" ]]; then
+        wrror_exit "-  Installation aborted."
+    elif [[ "${REPLY}" == "?" ]]; then
+        printf '
+   Enter a list of directories to start searching from (space-separated)."
+   An empty response cancels the search. You may use '/' to start a full"
+   search. Some good start points are:"
+
+        /usr/lib/jvm        (Linux)"
+        /System /Libraries  (Mac OS X)"
+'
+
+    fi
 done
-
-javadir="` cd \"$javadir\"; pwd `"
-echo ""
-echo "   Ok."
-echo ""
-
-### found java installation in $javadir (bin/java and include/) ######
-
-
-### find directory for native libraries ##############################
-
-echo "echo '$javadir'" > javadir
-sysname=` sh ./java -cp sysinfo.jar util.SysInfo os.name `
-test -z "$sysname" && error_exit "-  Can't determine system name ('java -cp sysinfo.jar util.SysInfo os.name') - aborted."
-
-
-### find include files for native compilation ########################
-
-include_other_dir=""
-other_include="jni_md.h"
-if [ ! -r "$javadir/include/$other_include" ]
-  then other_found=` echo "$javadir/include"/*/"$other_include" `
-       if [ "$other_found" != "$javadir/include/*/$other_include" ]
-         then include_other_dir=" -I` expr \"$other_found\" : \"^\([^ ]*\)/$other_include\" 2>&- `"
-	 else echo "   Warning: can't find include file '$other_include'."
-	      echo "   Making of native libraries might fail. Press Return."
-	      read
-       fi
-fi
-
-echo ""
-echo "*  extracting C sources ..."
-unzip -q CaGe-C.zip || error_exit "-  'unzip' failure, aborting."
-#echo "   Ok."
-#echo ""
-
-echo ""
-echo "*  Precomputing data in the background ..."
-echo ""
-(
-cd PreCompute &&
-make
-make compute &
-) || error_exit "-  'make' failure, aborting."
-echo ""
-echo "   Ok."
-echo ""
-
-echo ""
-echo "*  Making generators and embedders ..."
-echo ""
-(
-cd Generators &&
-make
-) || error_exit "-  'make' failure, aborting."
-echo ""
-echo "   Ok."
-echo ""
-
-echo ""
-echo "*  Making native libraries ..."
-echo ""
-(
-cd Native/src &&
-mkdir -p ../$sysname &&
-CPPFLAGS="$CPPFLAGS -I$javadir/include$include_other_dir -w" make "$sysname"
-) || error_exit "-  'make' failure, aborting."
-echo ""
-echo "   Ok."
-echo ""
-
-chmod u+x cage.sh
-echo ""
-echo "+  Installation successful - congratulations!"
-echo "   CaGe is started by the 'cage.sh' command."
-echo "   The file 'CaGe.ini' contains some options and comments."
-echo ""
-
