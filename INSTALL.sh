@@ -156,17 +156,17 @@ prepare_java_dir_list_prompt() {
     printf '    Enter '\''?'\'' for a full search, or '\''-'\'' to exit.\n'
 }
 
-# We will try to find the 'java_home' command.
+# We will try to find the the javadir automatically on macOS.
 # If we can't find it, we will ask the user to enter the path
 homedir_mac=""
 [[ -f /usr/libexec/java_home ]] && [[ -x /usr/libexec/java_home ]] && \
     homedir_mac="$(/usr/libexec/java_home)/bin:"
 
-    add_to_java_dir_list "${PATH}:${homedir_mac}" ":"
+add_to_java_dir_list "${PATH}:${homedir_mac}" ":"
 
-    prepare_java_dir_list_prompt
+prepare_java_dir_list_prompt
 
-    while [[ -z "${REPLY}" ]]; do
+while [[ -z "${REPLY}" ]]; do
     printf '\n'
     [[ -n "${java_dir_list}" ]] && printf '%s\n' "${java_dir_list}"
     printf '\n%s\c' "${prompt}"
@@ -182,7 +182,40 @@ homedir_mac=""
 
         /usr/lib/jvm        (Linux)"
         /System /Libraries  (Mac OS X)"
-'
 
+        Start point: \c
+'
+        read -r ${with_completion?} points
+        points="${points##* }"   # remove leading whitespace
+        points="${points%%* }"   # remove trailing whitespace
+
+        [[ -z "${points}" ]] && continue
+
+        additional=""
+        [[ "${java_dirs}" -gt 0 ]] && additional=" additional"
+        printf 'Searching for%s Java directories ...\n' "${additional}"
+        add_to_javadirlist \
+            "$(find "${points}" \( -type f -o -type l \) \
+                 -name "${java_cmd}" \
+                 -perm -ugo=x \
+                 -print 2>/dev/null)" \
+            "$nl" \
+            true
+
+        prepare_javadirlist_prompt
+    elif [[ "${REPLY}" =~ ^[1-9][0-9]*$ ]]; then
+        java_dir="$(java_dir_list_get \""${REPLY}"\")"
+        java_dir="$(parent "${java_dir}")"
+    elif is_java_dir "${REPLY}"; then
+        java_dir="${REPLY}"
+    else
+        printf '   Invalid response. Enter a number, a directory, or '\''?'\'' for a full search.\n'
+        if [[ "${java_dirs}" -eq 0 ]]; then
+            printf 'The directory must contain a %s' "${java_cmd}"
+            printf ' command and a "sibling" directory called '\''include'\'' containing '\''jni.h'\''.\n'
+        fi
     fi
 done
+
+java_dir="$(cd "${java_dir}" && pwd)"
+printf '   Ok, using %s.\n' "${java_dir}"
