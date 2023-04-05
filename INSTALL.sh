@@ -47,7 +47,8 @@ parent() {
 }
 
 is_java_dir() {
-    local java_dir="$(parent "${1}")"
+    local java_dir
+    java_dir="$(parent "${1}")"
     [[ -x "${java_dir}/bin/${java_cmd}" ]] && \
         [[ ! -d "${java_dir}/bin/${java_cmd}" ]] && \
         [[ -r "${java_dir}/include/jni.h" ]]
@@ -102,7 +103,6 @@ java_dirs=0
 nl="
 "
 
-space="	 "
 java_dir_list=""
 
 java_dir_list_get() {
@@ -219,3 +219,30 @@ done
 
 java_dir="$(cd "${java_dir}" && pwd)"
 printf '   Ok, using %s.\n' "${java_dir}"
+
+java_dir_file="javadir"
+printf 'echo %s\n' "${java_dir}" > "${java_dir_file}"
+
+# We need the current OS name for comiling the code with the
+# 'Native' directory. We can use 'uname -s' for this.
+# The command will return 'Linux' on Linux systems, 'Darwin' on macOS.
+system_name="$(uname -s)"
+[[ -z "${system_name}" ]] && \
+    error_exit "-  Can't determine system name ('uname -s') - aborted."
+
+# Since 'uname -s' returns 'Darwin' on macOS systems, and our Makefile
+# expects 'Mac', we will have to do some renaming here.
+[[ "${system_name}" == "Darwin" ]] && system_name="Mac"
+
+include_other_dir=""
+other_include="jni_md.h"
+if [[ ! -r "${javadir}/include/${other_include}" ]]; then
+    other_found="$(echo "${javadir}/include"/*/"${other_include}")"
+    if [[ "${other_found}" != "${javadir}/include/*/${other_include}" ]]; then
+        include_other_dir="$(dirname "${other_found}")"
+    fi
+else
+    printf '   Warning: can'\''t find include file '\''\${other_include}'\''.'
+    printf '   Making of native libraries might fail. Press Return.\n'
+fi
+
