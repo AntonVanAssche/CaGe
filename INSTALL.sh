@@ -37,9 +37,9 @@ find_cmds() {
 }
 
 parent() {
-    if parent="$(expr "${1}" : '^\(.*[^/]\)//*[^/][^/]*/*$' 2>&- )"; then
+    if parent="${1##*/}"; then
         printf '%s' "${parent}"
-    elif expr "${1}" : '^/' 2>&- >/dev/null; then
+    elif [[ "${1}" =~ ^/ ]]; then
         printf '/'
     else
         printf '.'
@@ -115,8 +115,12 @@ add_to_java_dir_list() {
     local dir_sep="${2}"
     local get_parents="${3}"
 
+    # Loop through each directory in the list separated by ':'.
+    # '${dir_list%%:*}' will extract the first directory in the
+    # list until the first ':' character is encountered.
+    # The extracted directory is stored in the 'dir' variable.
     while dir="$(expr \"${dir_list}\" : \"^\([^${dir_sep}]*\)\" 2>&-)"; do
-        [[ "${get_parents}" ]] && dir="$(parent "${dir}")"
+        [[ "${get_parents}" == "true" ]] && dir="$(parent "${dir}")"
         [[ -z "${dir}" ]] && dir=.
         if is_java_dir "${dir}"; then
             java_dirs="$(expr "${java_dirs}" + 1)"
@@ -153,7 +157,7 @@ prepare_java_dir_list_prompt() {
         prompt="directory [1-${java_dirs}]: "
     fi
 
-    printf '    Enter '\''?'\'' for a full search, or '\''-'\'' to exit.\n'
+    printf '   Enter '\''?'\'' for a full search, or '\''-'\'' to exit.\n'
 }
 
 # We will try to find the the javadir automatically on macOS.
@@ -162,20 +166,22 @@ homedir_mac=""
 [[ -f /usr/libexec/java_home ]] && [[ -x /usr/libexec/java_home ]] && \
     homedir_mac="$(/usr/libexec/java_home)/bin:"
 
-add_to_java_dir_list "${PATH}:${homedir_mac}" ":"
+add_to_java_dir_list "${PATH}:${homedir_mac}" ":" false
 
 prepare_java_dir_list_prompt
 
+REPLY=""
 while [[ -z "${REPLY}" ]]; do
     printf '\n'
     [[ -n "${java_dir_list}" ]] && printf '%s\n' "${java_dir_list}"
-    printf '\n%s\c' "${prompt}"
+    printf '\n%s' "${prompt}"
     read -r ${with_completion?}
 
     if [[ "${REPLY}" == "-" ]]; then
-        wrror_exit "-  Installation aborted."
+        error_exit "-  Installation aborted."
     elif [[ "${REPLY}" == "?" ]]; then
-        printf '
+        REPLY=""
+        cat << EOF
    Enter a list of directories to start searching from (space-separated)."
    An empty response cancels the search. You may use '/' to start a full"
    search. Some good start points are:"
@@ -184,10 +190,10 @@ while [[ -z "${REPLY}" ]]; do
         /System /Libraries  (Mac OS X)"
 
         Start point: \c
-'
+EOF
         read -r ${with_completion?} points
-        points="${points##* }"   # remove leading whitespace
-        points="${points%%* }"   # remove trailing whitespace
+        points="${points##* }"   # Remove leading whitespace.
+        points="${points%%* }"   # Remove trailing whitespace.
 
         [[ -z "${points}" ]] && continue
 
@@ -209,10 +215,11 @@ while [[ -z "${REPLY}" ]]; do
     elif is_java_dir "${REPLY}"; then
         java_dir="${REPLY}"
     else
+        REPLY=""
         printf '   Invalid response. Enter a number, a directory, or '\''?'\'' for a full search.\n'
         if [[ "${java_dirs}" -eq 0 ]]; then
-            printf 'The directory must contain a %s' "${java_cmd}"
-            printf ' command and a "sibling" directory called '\''include'\'' containing '\''jni.h'\''.\n'
+            printf '   The directory must contain a %s' "${java_cmd}"
+            printf '   command and a "sibling" directory called '\''include'\'' containing '\''jni.h'\''.\n'
         fi
     fi
 done
@@ -252,24 +259,24 @@ printf '\n   Ok.\n'
 
 printf '\n*  Precomputing data in the background ...\n'
 (
-cd PreCompute
-make
-make compute
+    cd PreCompute
+    make
+    make compute &
 ) || error_exit "-  'make' failure, aborting."
 printf '\n   Ok.\n'
 
 printf '\n*  Making generators and embedders ...\n'
 (
-cd Generators
-make
+    cd Generators
+    make
 ) || error_exit "-  'make' failure, aborting."
 printf '\n   Ok.\n'
 
 printf '\n*  Making native libraries for %s ...\n' "${system_name}"
 (
-cd Native/src
-mkdir -p "../${system_name}"
-CPPFLAGS="$CPPFLAGS -I$javadir/include$include_other_dir -w" make "${system_name}"
+    cd Native/src
+    mkdir -p "../${system_name}"
+    CPPFLAGS="$CPPFLAGS -I${java_dir}/include$include_other_dir -w" make "${system_name}"
 ) || error_exit "-  'make' failure, aborting."
 printf '\n   Ok.\n'
 
