@@ -236,9 +236,9 @@ system_name="$(uname -s)"
 
 include_other_dir=""
 other_include="jni_md.h"
-if [[ ! -r "${javadir}/include/${other_include}" ]]; then
-    other_found="$(echo "${javadir}/include"/*/"${other_include}")"
-    if [[ "${other_found}" != "${javadir}/include/*/${other_include}" ]]; then
+if [[ ! -r "${java_dir}/include/${other_include}" ]]; then
+    other_found="$(echo "${java_dir}/include"/*/"${other_include}")"
+    if [[ "${other_found}" != "${java_dir}/include/*/${other_include}" ]]; then
         include_other_dir="$(dirname "${other_found}")"
     fi
 else
@@ -246,3 +246,38 @@ else
     printf '   Making of native libraries might fail. Press Return.\n'
 fi
 
+printf '\n*  extracting C sources ...\n'
+unzip -q CaGe-C.zip || error_exit "-  'unzip' failure, aborting."
+printf '\n   Ok.\n'
+
+printf '\n*  Precomputing data in the background ...\n'
+(
+cd PreCompute
+make
+make compute
+) || error_exit "-  'make' failure, aborting."
+printf '\n   Ok.\n'
+
+printf '\n*  Making generators and embedders ...\n'
+(
+cd Generators
+make
+) || error_exit "-  'make' failure, aborting."
+printf '\n   Ok.\n'
+
+printf '\n*  Making native libraries for %s ...\n' "${system_name}"
+(
+cd Native/src
+mkdir -p "../${system_name}"
+CPPFLAGS="$CPPFLAGS -I$javadir/include$include_other_dir -w" make "${system_name}"
+) || error_exit "-  'make' failure, aborting."
+printf '\n   Ok.\n'
+
+chmod u+x cage.sh
+cat <<EOF
+
++  Installation successful - congratulations!
+   CaGe is started by the 'cage.sh' command.
+   The file 'CaGe.ini' contains some options and comments.
+
+EOF
